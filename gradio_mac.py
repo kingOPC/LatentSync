@@ -303,14 +303,6 @@ def build_demo() -> gr.Blocks:
                 video_output = gr.Video(label="生成结果")
                 download_output = gr.File(label="下载 MP4")
 
-        gr.Examples(
-            examples=[
-                ["assets/demo1_video.mp4", "assets/demo1_audio.wav", "", "婷婷（普通话女声）", 180, "720p", "双机加速（推荐）"],
-                ["assets/demo2_video.mp4", None, "欢迎使用双机数字人视频生成工具。", "婷婷（普通话女声）", 180, "720p", "双机加速（推荐）"],
-            ],
-            inputs=[video_input, audio_input, text_input, voice, speech_rate, resolution, render_mode],
-        )
-
         preview_button.click(
             fn=preview_voice,
             inputs=[text_input, voice, speech_rate],
