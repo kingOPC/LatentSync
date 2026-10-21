@@ -221,6 +221,8 @@ class Attention(nn.Module):
         self.scale = dim_head**-0.5
 
         self.heads = heads
+        self.sliceable_head_dim = heads
+        self._slice_size = None
 
         if norm_num_groups is not None:
             self.group_norm = nn.GroupNorm(num_channels=inner_dim, num_groups=norm_num_groups, eps=1e-5, affine=True)
@@ -234,6 +236,11 @@ class Attention(nn.Module):
         self.to_out = nn.ModuleList([])
         self.to_out.append(nn.Linear(inner_dim, query_dim))
         self.to_out.append(nn.Dropout(dropout))
+
+    def set_attention_slice(self, slice_size):
+        if slice_size is not None and (slice_size <= 0 or slice_size > self.heads):
+            raise ValueError(f"slice_size must be between 1 and {self.heads}, got {slice_size}")
+        self._slice_size = slice_size
 
     def split_heads(self, tensor):
         batch_size, seq_len, dim = tensor.shape
@@ -268,7 +275,32 @@ class Attention(nn.Module):
                 attention_mask = attention_mask.repeat_interleave(self.heads, dim=0)
 
         # Use PyTorch native implementation of FlashAttention-2
-        hidden_states = F.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask)
+        if self._slice_size is None or self._slice_size >= self.heads:
+            hidden_states = F.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask)
+        else:
+            # MPS materializes a large score buffer for SDPA.  Slicing heads
+            # alone still leaves a 4096 x 4096 score matrix for each video
+            # frame, so also slice independent query rows.  Each query row is
+            # normalized only over keys, making this chunking exact.
+            query_slice_size = 256
+            head_outputs = []
+            for head_start in range(0, self.heads, self._slice_size):
+                query_outputs = []
+                for query_start in range(0, query.shape[2], query_slice_size):
+                    query_end = query_start + query_slice_size
+                    sliced_mask = attention_mask
+                    if attention_mask is not None and attention_mask.shape[-2] == query.shape[2]:
+                        sliced_mask = attention_mask[..., query_start:query_end, :]
+                    query_outputs.append(
+                        F.scaled_dot_product_attention(
+                            query[:, head_start : head_start + self._slice_size, query_start:query_end],
+                            key[:, head_start : head_start + self._slice_size],
+                            value[:, head_start : head_start + self._slice_size],
+                            attn_mask=sliced_mask,
+                        )
+                    )
+                head_outputs.append(torch.cat(query_outputs, dim=2))
+            hidden_states = torch.cat(head_outputs, dim=1)
 
         hidden_states = self.concat_heads(hidden_states)
 

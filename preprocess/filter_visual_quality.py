@@ -19,9 +19,9 @@ import torchvision
 import shutil
 from multiprocessing import Process
 import numpy as np
-from decord import VideoReader
 from einops import rearrange
 from eval.hyper_iqa import HyperNet, TargetNet
+from latentsync.utils.media import get_video_frame_count, read_video_frames
 
 
 paths = []
@@ -42,12 +42,8 @@ def gather_paths(input_dir, output_dir):
 
 
 def read_video(video_path: str):
-    vr = VideoReader(video_path)
-    first_frame = vr[0].asnumpy()
-    middle_frame = vr[len(vr) // 2].asnumpy()
-    last_frame = vr[-1].asnumpy()
-    vr.seek(0)
-    video_frames = np.stack([first_frame, middle_frame, last_frame], axis=0)
+    frame_count = get_video_frame_count(video_path)
+    video_frames = read_video_frames(video_path, [0, frame_count // 2, frame_count - 1])
     video_frames = torch.from_numpy(rearrange(video_frames, "b h w c -> b c h w"))
     video_frames = video_frames / 255.0
     return video_frames

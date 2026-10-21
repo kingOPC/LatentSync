@@ -21,9 +21,9 @@ import random
 import cv2
 from ..utils.image_processor import ImageProcessor, load_fixed_mask
 from ..utils.audio import melspectrogram
-from decord import AudioReader, VideoReader, cpu
 import torch.nn.functional as F
 from pathlib import Path
+from ..utils.media import get_video_frame_count, read_audio_ffmpeg, read_video_frames
 
 
 class UNetDataset(Dataset):
@@ -57,8 +57,7 @@ class UNetDataset(Dataset):
         return len(self.video_paths)
 
     def read_audio(self, video_path: str):
-        ar = AudioReader(video_path, ctx=cpu(self.worker_id), sample_rate=self.audio_sample_rate)
-        original_mel = melspectrogram(ar[:].asnumpy().squeeze(0))
+        original_mel = melspectrogram(read_audio_ffmpeg(video_path, self.audio_sample_rate))
         return torch.from_numpy(original_mel)
 
     def crop_audio_window(self, original_mel, start_index):
@@ -66,9 +65,7 @@ class UNetDataset(Dataset):
         end_idx = start_idx + self.mel_window_length
         return original_mel[:, start_idx:end_idx].unsqueeze(0)
 
-    def get_frames(self, video_reader: VideoReader):
-        total_num_frames = len(video_reader)
-
+    def get_frames(self, video_path: str, total_num_frames: int):
         start_idx = random.randint(0, total_num_frames - self.num_frames)
         gt_frames_index = np.arange(start_idx, start_idx + self.num_frames, dtype=int)
 
@@ -79,8 +76,8 @@ class UNetDataset(Dataset):
             ref_frames_index = np.arange(ref_start_idx, ref_start_idx + self.num_frames, dtype=int)
             break
 
-        gt_frames = video_reader.get_batch(gt_frames_index).asnumpy()
-        ref_frames = video_reader.get_batch(ref_frames_index).asnumpy()
+        gt_frames = read_video_frames(video_path, gt_frames_index)
+        ref_frames = read_video_frames(video_path, ref_frames_index)
 
         return gt_frames, ref_frames, start_idx
 
@@ -95,12 +92,11 @@ class UNetDataset(Dataset):
                 # Get video file path
                 video_path = self.video_paths[idx]
 
-                vr = VideoReader(video_path, ctx=cpu(self.worker_id))
-
-                if len(vr) < 3 * self.num_frames:
+                total_num_frames = get_video_frame_count(video_path)
+                if total_num_frames < 3 * self.num_frames:
                     continue
 
-                gt_frames, ref_frames, start_idx = self.get_frames(vr)
+                gt_frames, ref_frames, start_idx = self.get_frames(video_path, total_num_frames)
 
                 if self.load_audio_data:
                     mel_cache_path = os.path.join(
@@ -131,13 +127,10 @@ class UNetDataset(Dataset):
                 )  # (f, c, h, w)
                 ref_pixel_values = self.image_processor.process_images(ref_frames)
 
-                vr.seek(0)  # avoid memory leak
                 break
 
             except Exception as e:  # Handle the exception of face not detcted
                 print(f"{type(e).__name__} - {e} - {video_path}")
-                if "vr" in locals():
-                    vr.seek(0)  # avoid memory leak
 
         sample = dict(
             gt_pixel_values=gt_pixel_values,

@@ -23,7 +23,7 @@ from ..utils.audio import melspectrogram
 import math
 from pathlib import Path
 
-from decord import AudioReader, VideoReader, cpu
+from ..utils.media import get_video_frame_count, read_audio_ffmpeg, read_video_frames
 
 
 class SyncNetDataset(Dataset):
@@ -51,8 +51,7 @@ class SyncNetDataset(Dataset):
         return len(self.video_paths)
 
     def read_audio(self, video_path: str):
-        ar = AudioReader(video_path, ctx=cpu(self.worker_id), sample_rate=self.audio_sample_rate)
-        original_mel = melspectrogram(ar[:].asnumpy().squeeze(0))
+        original_mel = melspectrogram(read_audio_ffmpeg(video_path, self.audio_sample_rate))
         return torch.from_numpy(original_mel)
 
     def crop_audio_window(self, original_mel, start_index):
@@ -60,9 +59,7 @@ class SyncNetDataset(Dataset):
         end_idx = start_idx + self.mel_window_length
         return original_mel[:, start_idx:end_idx].unsqueeze(0)
 
-    def get_frames(self, video_reader: VideoReader):
-        total_num_frames = len(video_reader)
-
+    def get_frames(self, video_path: str, total_num_frames: int):
         start_idx = random.randint(0, total_num_frames - self.num_frames)
         frames_index = np.arange(start_idx, start_idx + self.num_frames, dtype=int)
 
@@ -73,8 +70,8 @@ class SyncNetDataset(Dataset):
             wrong_frames_index = np.arange(wrong_start_idx, wrong_start_idx + self.num_frames, dtype=int)
             break
 
-        frames = video_reader.get_batch(frames_index).asnumpy()
-        wrong_frames = video_reader.get_batch(wrong_frames_index).asnumpy()
+        frames = read_video_frames(video_path, frames_index)
+        wrong_frames = read_video_frames(video_path, wrong_frames_index)
 
         return frames, wrong_frames, start_idx
 
@@ -89,12 +86,11 @@ class SyncNetDataset(Dataset):
                 # Get video file path
                 video_path = self.video_paths[idx]
 
-                vr = VideoReader(video_path, ctx=cpu(self.worker_id))
-
-                if len(vr) < 2 * self.num_frames:
+                total_num_frames = get_video_frame_count(video_path)
+                if total_num_frames < 2 * self.num_frames:
                     continue
 
-                frames, wrong_frames, start_idx = self.get_frames(vr)
+                frames, wrong_frames, start_idx = self.get_frames(video_path, total_num_frames)
 
                 mel_cache_path = os.path.join(
                     self.audio_mel_cache_dir, os.path.basename(video_path).replace(".mp4", "_mel.pt")
@@ -126,13 +122,10 @@ class SyncNetDataset(Dataset):
 
                 chosen_frames = self.image_processor.process_images(chosen_frames)
 
-                vr.seek(0)  # avoid memory leak
                 break
 
             except Exception as e:  # Handle the exception of face not detcted
                 print(f"{type(e).__name__} - {e} - {video_path}")
-                if "vr" in locals():
-                    vr.seek(0)  # avoid memory leak
 
         sample = dict(frames=chosen_frames, audio_samples=mel, y=y)
 

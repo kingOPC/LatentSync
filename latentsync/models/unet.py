@@ -492,8 +492,11 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         return super().load_state_dict(state_dict=state_dict, strict=strict)
 
     @classmethod
-    def from_pretrained(cls, model_config: dict, ckpt_path: str, device="cpu"):
-        unet = cls.from_config(model_config).to(device)
+    def from_pretrained(cls, model_config: dict, ckpt_path: str, device="cpu", dtype=None):
+        # Construct the model directly in the inference dtype.  On a 16 GB
+        # Apple Silicon machine this avoids briefly keeping both a full fp32
+        # UNet and the roughly 5 GB fp32 checkpoint in unified memory.
+        unet = cls.from_config(model_config).to(device=device, dtype=dtype)
         if ckpt_path != "":
             zero_rank_log(logger, f"Load from checkpoint: {ckpt_path}")
             ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
@@ -505,7 +508,10 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             unet.load_state_dict(ckpt["state_dict"], strict=False)
 
             del ckpt
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif torch.backends.mps.is_available():
+                torch.mps.empty_cache()
         else:
             resume_global_step = 0
 

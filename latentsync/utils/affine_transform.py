@@ -9,6 +9,9 @@ import kornia
 
 class AlignRestore(object):
     def __init__(self, align_points=3, resolution=256, device="cpu", dtype=torch.float16):
+        if torch.device(device).type == "cpu" and dtype == torch.float16:
+            # grid_sample/warp_affine has no float16 CPU implementation.
+            dtype = torch.float32
         if align_points == 3:
             self.upscale_factor = 1
             ratio = resolution / 256 * 2.8
@@ -48,7 +51,7 @@ class AlignRestore(object):
             affine_matrix = torch.from_numpy(affine_matrix).to(device=self.device, dtype=self.dtype).unsqueeze(0)
 
         inv_affine_matrix = kornia.geometry.transform.invert_affine_transform(affine_matrix)
-        face = face.to(dtype=self.dtype).unsqueeze(0)
+        face = face.to(device=self.device, dtype=self.dtype).unsqueeze(0)
 
         inv_face = kornia.geometry.transform.warp_affine(
             face, inv_affine_matrix, (h, w), mode="bilinear", padding_mode="fill", fill_value=self.fill_value

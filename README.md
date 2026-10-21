@@ -103,6 +103,44 @@ If the download is successful, the checkpoints should appear as follows:
 
 Or you can download `latentsync_unet.pt` and `tiny.pt` manually from our [HuggingFace repo](https://huggingface.co/ByteDance/LatentSync-1.6)
 
+### Apple Silicon macOS (M1–M4, 16 GB)
+
+This checkout includes an MPS-compatible, memory-limited setup for Apple Silicon:
+
+```bash
+./setup_mac.sh
+./start_mac_ui.sh
+```
+
+The startup command prints the local interface URL (for example, `http://127.0.0.1:7862`). Command-line inference is also available:
+
+```bash
+./run_mac.sh base.mp4 audio.wav output.mp4
+```
+
+The Mac profile uses 8-frame batches, 20 inference steps, FP16, sliced attention and CPU-based ONNX face detection. It normalizes input to 25 fps and a 720p long edge by default. Set `LATENTSYNC_MAX_DIM=1920` for the higher-memory 1080p profile.
+
+The Mac web interface accepts either an uploaded driving audio file or typed Chinese text. When no audio is uploaded, it uses a selected macOS Mandarin voice to synthesize 16 kHz mono speech before lip-sync inference. If both are supplied, the uploaded audio takes priority.
+
+#### Two-Mac rendering
+
+After preparing the second Mac and enabling SSH key login, configure the remote once and render one video across both machines with:
+
+```bash
+export LATENTSYNC_REMOTE="user@host"
+export LATENTSYNC_REMOTE_ROOT="/path/to/LatentSync"
+.venv/bin/python dual_mac_render.py base.mp4 audio.wav output.mp4
+```
+
+The same values can be provided for an individual run:
+
+```bash
+.venv/bin/python dual_mac_render.py base.mp4 audio.wav output.mp4 \
+  --remote user@host --remote-root /path/to/LatentSync
+```
+
+The coordinator converts the source to 25 fps, splits it on 8-frame boundaries, and lets each Mac claim the next available segment. It then joins the rendered video and adds the normalized source audio once, preserving the target duration. Set the two environment variables before starting the Mac web interface to use its two-Mac mode.
+
 ## 🚀 Inference
 
 Minimum VRAM for inference:

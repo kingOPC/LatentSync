@@ -28,9 +28,11 @@ from torchvision import transforms
 
 from einops import rearrange
 import cv2
-from decord import AudioReader, VideoReader
 import shutil
 import subprocess
+import tempfile
+
+from .media import read_audio_ffmpeg, read_video_frames
 
 
 # Machine epsilon for a float32 (single precision)
@@ -43,73 +45,30 @@ def read_json(filepath: str):
     return json_dict
 
 
-def read_video(video_path: str, change_fps=True, use_decord=True):
-    if change_fps:
-        temp_dir = "temp"
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        os.makedirs(temp_dir, exist_ok=True)
-        command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -crf 18 {os.path.join(temp_dir, 'video.mp4')}"
-        )
-        subprocess.run(command, shell=True)
-        target_video_path = os.path.join(temp_dir, "video.mp4")
-    else:
-        target_video_path = video_path
+def read_video(video_path: str, change_fps=False):
+    if not change_fps:
+        return read_video_cv2(video_path)
 
-    if use_decord:
-        return read_video_decord(target_video_path)
-    else:
+    with tempfile.TemporaryDirectory(prefix="latentsync-video-") as temp_dir:
+        target_video_path = os.path.join(temp_dir, "video.mp4")
+        subprocess.run(
+            [
+                "ffmpeg", "-loglevel", "error", "-y", "-nostdin", "-i", video_path,
+                "-r", "25", "-crf", "18", target_video_path,
+            ],
+            check=True,
+        )
         return read_video_cv2(target_video_path)
 
 
-def read_video_decord(video_path: str):
-    vr = VideoReader(video_path)
-    video_frames = vr[:].asnumpy()
-    vr.seek(0)
-    return video_frames
-
-
 def read_video_cv2(video_path: str):
-    # Open the video file
-    cap = cv2.VideoCapture(video_path)
-
-    # Check if the video was opened successfully
-    if not cap.isOpened():
-        print("Error: Could not open video.")
-        return np.array([])
-
-    frames = []
-
-    while True:
-        # Read a frame
-        ret, frame = cap.read()
-
-        # If frame is read correctly ret is True
-        if not ret:
-            break
-
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        frames.append(frame_rgb)
-
-    # Release the video capture object
-    cap.release()
-
-    return np.array(frames)
+    return read_video_frames(video_path)
 
 
 def read_audio(audio_path: str, audio_sample_rate: int = 16000):
     if audio_path is None:
         raise ValueError("Audio path is required.")
-    ar = AudioReader(audio_path, sample_rate=audio_sample_rate, mono=True)
-
-    # To access the audio samples
-    audio_samples = torch.from_numpy(ar[:].asnumpy())
-    audio_samples = audio_samples.squeeze(0)
-
-    return audio_samples
+    return torch.from_numpy(read_audio_ffmpeg(audio_path, sample_rate=audio_sample_rate))
 
 
 def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):

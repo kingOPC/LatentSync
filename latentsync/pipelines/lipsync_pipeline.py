@@ -315,7 +315,7 @@ class LipsyncPipeline(DiffusionPipeline):
         video_path: str,
         audio_path: str,
         video_out_path: str,
-        num_frames: int = 16,
+        num_frames: int = 8,
         video_fps: int = 25,
         audio_sample_rate: int = 16000,
         height: Optional[int] = None,
@@ -338,13 +338,17 @@ class LipsyncPipeline(DiffusionPipeline):
 
         # 0. Define call parameters
         device = self._execution_device
-        mask_image = load_fixed_mask(height, mask_image_path)
-        self.image_processor = ImageProcessor(height, device="cuda", mask_image=mask_image)
-        self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 1. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
+        mask_image = load_fixed_mask(height, mask_image_path)
+        # Face detection and affine restoration stay on CPU. This avoids unsupported
+        # MPS operators and leaves unified memory available to the diffusion model.
+        self.image_processor = ImageProcessor(
+            height, device="cpu", mask_image=mask_image, enable_face_detection=True
+        )
+        self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 2. Check inputs
         self.check_inputs(height, width, callback_steps)
@@ -365,7 +369,7 @@ class LipsyncPipeline(DiffusionPipeline):
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
 
         audio_samples = read_audio(audio_path)
-        video_frames = read_video(video_path, use_decord=False)
+        video_frames = read_video(video_path, change_fps=False)
 
         video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
 
@@ -455,7 +459,23 @@ class LipsyncPipeline(DiffusionPipeline):
             decoded_latents = self.paste_surrounding_pixels_back(
                 decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
             )
-            synced_video_frames.append(decoded_latents)
+            # Keep completed chunks on CPU so long clips do not accumulate MPS memory.
+            synced_video_frames.append(decoded_latents.cpu())
+            del (
+                decoded_latents,
+                ref_latents,
+                masked_image_latents,
+                mask_latents,
+                latents,
+                unet_input,
+                noise_pred,
+                audio_embeds,
+                ref_pixel_values,
+                masked_pixel_values,
+                masks,
+            )
+            if device.type == "mps":
+                torch.mps.empty_cache()
 
         synced_video_frames = self.restore_video(torch.cat(synced_video_frames), video_frames, boxes, affine_matrices)
 

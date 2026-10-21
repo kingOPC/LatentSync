@@ -21,7 +21,19 @@ from latentsync.models.unet import UNet3DConditionModel
 from latentsync.pipelines.lipsync_pipeline import LipsyncPipeline
 from accelerate.utils import set_seed
 from latentsync.whisper.audio2feature import Audio2Feature
-from DeepCache import DeepCacheSDHelper
+
+
+def resolve_device(requested_device: str) -> torch.device:
+    if requested_device == "auto":
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        return torch.device("cpu")
+    device = torch.device(requested_device)
+    if device.type == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError("MPS was requested but is not available in this PyTorch build")
+    return device
 
 
 def main(config, args):
@@ -30,13 +42,14 @@ def main(config, args):
     if not os.path.exists(args.audio_path):
         raise RuntimeError(f"Audio path '{args.audio_path}' not found")
 
-    # Check if the GPU supports float16
-    is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
-    dtype = torch.float16 if is_fp16_supported else torch.float32
+    device = resolve_device(args.device)
+    dtype = torch.float16 if device.type in {"mps", "cuda"} else torch.float32
+    config.data.num_frames = args.num_frames
 
     print(f"Input video path: {args.video_path}")
     print(f"Input audio path: {args.audio_path}")
     print(f"Loaded checkpoint path: {args.inference_ckpt_path}")
+    print(f"Inference device: {device} ({dtype})")
 
     scheduler = DDIMScheduler.from_pretrained("configs")
 
@@ -49,12 +62,12 @@ def main(config, args):
 
     audio_encoder = Audio2Feature(
         model_path=whisper_model_path,
-        device="cuda",
+        device=device,
         num_frames=config.data.num_frames,
         audio_feat_length=config.data.audio_feat_length,
     )
 
-    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse", torch_dtype=dtype)
+    vae = AutoencoderKL.from_pretrained(args.vae_path, torch_dtype=dtype)
     vae.config.scaling_factor = 0.18215
     vae.config.shift_factor = 0
 
@@ -62,19 +75,26 @@ def main(config, args):
         OmegaConf.to_container(config.model),
         args.inference_ckpt_path,
         device="cpu",
+        dtype=dtype,
     )
-
-    unet = unet.to(dtype=dtype)
 
     pipeline = LipsyncPipeline(
         vae=vae,
         audio_encoder=audio_encoder,
         unet=unet,
         scheduler=scheduler,
-    ).to("cuda")
+    ).to(device)
+
+    # These trade a little speed for much lower peak unified-memory use.
+    pipeline.enable_attention_slicing()
+    pipeline.enable_vae_slicing()
+    if hasattr(pipeline.vae, "enable_tiling"):
+        pipeline.vae.enable_tiling()
 
     # use DeepCache
     if args.enable_deepcache:
+        from DeepCache import DeepCacheSDHelper
+
         helper = DeepCacheSDHelper(pipe=pipeline)
         helper.set_params(cache_interval=3, cache_branch_id=0)
         helper.enable()
@@ -105,10 +125,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--unet_config_path", type=str, default="configs/unet.yaml")
     parser.add_argument("--inference_ckpt_path", type=str, required=True)
+    parser.add_argument("--vae_path", type=str, default="checkpoints/sd-vae-ft-mse")
     parser.add_argument("--video_path", type=str, required=True)
     parser.add_argument("--audio_path", type=str, required=True)
     parser.add_argument("--video_out_path", type=str, required=True)
     parser.add_argument("--inference_steps", type=int, default=20)
+    parser.add_argument("--num_frames", type=int, default=8)
+    parser.add_argument("--device", choices=["auto", "mps", "cpu", "cuda"], default="auto")
     parser.add_argument("--guidance_scale", type=float, default=1.0)
     parser.add_argument("--temp_dir", type=str, default="temp")
     parser.add_argument("--seed", type=int, default=1247)

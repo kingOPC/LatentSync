@@ -32,7 +32,7 @@ def load_fixed_mask(resolution: int, mask_image_path="latentsync/utils/mask.png"
 
 
 class ImageProcessor:
-    def __init__(self, resolution: int = 512, device: str = "cpu", mask_image=None):
+    def __init__(self, resolution: int = 512, device: str = "cpu", mask_image=None, enable_face_detection=False):
         self.resolution = resolution
         self.resize = transforms.Resize(
             (resolution, resolution), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True
@@ -46,14 +46,11 @@ class ImageProcessor:
         else:
             self.mask_image = mask_image
 
-        if device == "cpu":
-            self.face_detector = None
-        else:
-            self.face_detector = FaceDetector(device=device)
+        self.face_detector = FaceDetector(device=device) if enable_face_detection else None
 
     def affine_transform(self, image: torch.Tensor) -> np.ndarray:
         if self.face_detector is None:
-            raise NotImplementedError("Using the CPU for face detection is not supported")
+            raise RuntimeError("Face detection is not enabled for this ImageProcessor")
         bbox, landmark_2d_106 = self.face_detector(image)
         if bbox is None:
             raise RuntimeError("Face not detected")
@@ -102,7 +99,7 @@ class ImageProcessor:
 
 class VideoProcessor:
     def __init__(self, resolution: int = 512, device: str = "cpu"):
-        self.image_processor = ImageProcessor(resolution, device)
+        self.image_processor = ImageProcessor(resolution, device, enable_face_detection=True)
 
     def affine_transform_video(self, video_path):
         video_frames = read_video(video_path, change_fps=False)

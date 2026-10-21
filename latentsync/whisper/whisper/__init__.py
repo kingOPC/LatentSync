@@ -109,7 +109,7 @@ def load_model(
         raise RuntimeError(f"Model {name} not found; available models = {available_models()}")
 
     with io.BytesIO(checkpoint_file) if in_memory else open(checkpoint_file, "rb") as fp:
-        checkpoint = torch.load(fp, map_location=device, weights_only=True)
+        checkpoint = torch.load(fp, map_location="cpu", weights_only=True)
     del checkpoint_file
 
     dims = ModelDimensions(**checkpoint["dims"])
@@ -117,6 +117,9 @@ def load_model(
     model.load_state_dict(checkpoint["model_state_dict"])
 
     del checkpoint
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif torch.backends.mps.is_available():
+        torch.mps.empty_cache()
 
     return model.to(device)

@@ -19,6 +19,9 @@ wandb/
 *debug*
 /debug
 /output
+/outputs/
+/checkpoints/
+/.venv/
 /validation
 /test
 /models/
